@@ -1,15 +1,22 @@
-#![allow(unused_imports, dead_code, soft_unstable)]
+//! Here are the benchmark results:
+//!
+//! test tests::main_crackle_pop                               ... bench:       8,454 ns/iter (+/- 2,463)
+//! test tests::main_crackle_pop_arraybuf_minimal_vars         ... bench:         635 ns/iter (+/- 127)
+//! test tests::main_crackle_pop_arraybuf_with_newline_methods ... bench:         769 ns/iter (+/- 38)
+//! test tests::main_crackle_pop_arraybuf_with_own_write_u8    ... bench:         748 ns/iter (+/- 256)
+//! test tests::main_crackle_pop_arrbuf                        ... bench:         669 ns/iter (+/- 136)
+//! test tests::main_crackle_pop_faster_utf8                   ... bench:       4,177 ns/iter (+/- 290)
+//! test tests::main_crackle_pop_hardcoded                     ... bench:       4,438 ns/iter (+/- 272)
 #![warn(missing_debug_implementations, rust_2018_idioms)]
 #![feature(test, array_value_iter)]
 
+use std::array::IntoIter;
 use std::io::{self, prelude::*};
-use std::{array::IntoIter, char, convert::TryInto, ops::Index};
-use std::{mem, ops::Deref};
-
-use io::Result;
+use std::ops::Deref;
+use std::str;
 
 pub fn main() {
-    crackle_pop_arraybuf_minimal_vars();
+    crackle_pop_faster_utf8();
 }
 
 /// 512 bytes, just enough for this problem. Can also test benchmarks with
@@ -17,7 +24,7 @@ pub fn main() {
 const ARRAY_BUFFER_SIZE: usize = 0x200;
 const MAX_CAP: usize = "CracklePop".len();
 
-fn crackle_pop() {
+pub fn crackle_pop() {
     let mut str = String::with_capacity(MAX_CAP);
     for n in 1..=100 {
         let div_by_3 = n % 3 == 0;
@@ -39,7 +46,7 @@ fn crackle_pop() {
 }
 
 /// Uses u8's and hardcoded const values rather than string buffer manipulation.
-fn crackle_pop_hardcoded() {
+pub fn crackle_pop_hardcoded() {
     const CRACKLE: &str = "Crackle";
     const POP: &str = "Pop";
     const CRACKLE_POP: &str = "CracklePop";
@@ -70,12 +77,18 @@ fn crackle_pop_hardcoded() {
 /// encodes u8 numbers into UTF8 characters representing them. Does a separate
 /// newline write however, which may degrade performance (consider making a
 /// writeln method on ArrayBuffer).
-fn crackle_pop_faster_utf8() {
+///
+/// This implementation also currently uses a vector, which means we do hit the
+/// heap here. Perhaps worth benchmark comparing to exactly the same form but
+/// with a stack-allocated buffer.
+pub fn crackle_pop_faster_utf8() {
     const CRACKLE: &str = "Crackle";
     const POP: &str = "Pop";
     const CRACKLE_POP: &str = "CracklePop";
 
-    let mut out = io::stdout();
+    // I'd prefer to use stdout directly here, but then it won't play well with
+    // tests (as it won't suppress output, unlike println!).
+    let mut vec = Vec::with_capacity(MAX_CAP + b"\n".len());
     for n in 1u8..=100 {
         let div_by_3 = n % 3 == 0;
         let div_by_5 = n % 5 == 0;
@@ -91,8 +104,12 @@ fn crackle_pop_faster_utf8() {
         };
 
         if str.is_empty() {
-            write_u8_as_utf8(n, &mut out);
-            out.write(b"\n").unwrap();
+            unsafe {
+                write_u8_as_utf8(n, &mut vec);
+                vec.write(b"\n").unwrap();
+                print!("{}", str::from_utf8_unchecked(&vec));
+                vec.clear();
+            }
         } else {
             println!("{}", str);
         }
@@ -101,7 +118,7 @@ fn crackle_pop_faster_utf8() {
 
 /// Furthers the faster utf8 implementation with an array-buffer to collect the
 /// data and follow with a single write to stdout.
-fn crackle_pop_arrbuf() {
+pub fn crackle_pop_arrbuf() {
     const CRACKLE: &str = "Crackle";
     const POP: &str = "Pop";
     const CRACKLE_POP: &str = "CracklePop";
@@ -135,7 +152,7 @@ fn crackle_pop_arrbuf() {
 
 /// Furthers the arraybuf impl by using its own write u8 as utf8 implementation
 /// that doesn't go through the Writer trait.
-fn crackle_pop_arraybuf_with_own_write_u8() {
+pub fn crackle_pop_arraybuf_with_own_write_u8() {
     const CRACKLE: &str = "Crackle";
     const POP: &str = "Pop";
     const CRACKLE_POP: &str = "CracklePop";
@@ -169,7 +186,7 @@ fn crackle_pop_arraybuf_with_own_write_u8() {
 
 /// Furthers the arraybuf and own_write_u8 impls by using ArrayBuffer's built-in
 /// newline pushing methods.
-fn crackle_pop_arraybuf_with_newline_methods() {
+pub fn crackle_pop_arraybuf_with_newline_methods() {
     const CRACKLE: &str = "Crackle";
     const POP: &str = "Pop";
     const CRACKLE_POP: &str = "CracklePop";
@@ -203,7 +220,7 @@ fn crackle_pop_arraybuf_with_newline_methods() {
 /// amount of data transformations happening by working with bytes instead of
 /// &str the whole time, and writing directly to the buffer rather than storing
 /// an intermediate "str" var.
-fn crackle_pop_arraybuf_minimal_vars() {
+pub fn crackle_pop_arraybuf_minimal_vars() {
     const CRACKLE: &[u8] = b"Crackle";
     const POP: &[u8] = b"Pop";
     const CRACKLE_POP: &[u8] = b"CracklePop";
@@ -230,7 +247,7 @@ fn crackle_pop_arraybuf_minimal_vars() {
 /// Idea: separate out the numbers that need to get converted to unicode, and
 /// look into using SIMD operations to batch the numerical additions needed
 /// together.
-fn crackle_pop_split_up() {
+fn _crackle_pop_split_up() {
     unimplemented!()
 }
 
@@ -285,6 +302,7 @@ impl<T: Default + Copy, const N: usize> ArrayBuffer<T, N> {
 }
 
 impl<T, const N: usize> ArrayBuffer<T, N> {
+    #[allow(dead_code)] // Currently used in tests.
     pub fn from(arr: [T; N]) -> Self {
         ArrayBuffer { pos: 0, buf: arr }
     }
@@ -307,8 +325,15 @@ impl<const N: usize> ArrayBuffer<u8, N> {
     /// Attempts to write the entire buffer to stdout. If it fails, the
     /// operation has to be repeated, as no state is saved internally to track
     /// what was last printed.
+    ///
+    /// I can probably update this to write out to any sink, and then write a
+    /// mock stdout for testing to avoid the problem of clobbering the terminal
+    /// with line info. But for now, I've opted for a print! oriented
+    /// implementation.
     pub fn write_all_to_stdout(&mut self) -> io::Result<()> {
-        io::stdout().write_all(&self.buf[0..self.pos])?;
+        // io::stdout().write_all(&self.buf[0..self.pos])?;
+        let str = unsafe { str::from_utf8_unchecked(&self.buf) };
+        print!("{}", str);
         self.pos = 0;
         Ok(())
     }
@@ -391,7 +416,6 @@ impl<const N: usize> Write for ArrayBuffer<u8, N> {
 #[cfg(test)]
 mod tests {
     extern crate test;
-    // use std::fmt::Write;
     use std::{borrow::Cow, io::Write};
     use test::Bencher;
 
@@ -504,18 +528,38 @@ mod tests {
     }
 
     #[bench]
-    fn crackle_pop(b: &mut Bencher) {
+    fn main_crackle_pop(b: &mut Bencher) {
         b.iter(|| super::crackle_pop());
     }
 
     #[bench]
-    fn crackle_pop_hardcoded(b: &mut Bencher) {
+    fn main_crackle_pop_hardcoded(b: &mut Bencher) {
         b.iter(|| super::crackle_pop_hardcoded());
     }
 
     #[bench]
-    fn crackle_pop_faster_utf8(b: &mut Bencher) {
+    fn main_crackle_pop_faster_utf8(b: &mut Bencher) {
         b.iter(|| super::crackle_pop_faster_utf8());
+    }
+
+    #[bench]
+    fn main_crackle_pop_arrbuf(b: &mut Bencher) {
+        b.iter(|| super::crackle_pop_arrbuf());
+    }
+
+    #[bench]
+    fn main_crackle_pop_arraybuf_with_own_write_u8(b: &mut Bencher) {
+        b.iter(|| super::crackle_pop_arraybuf_with_own_write_u8());
+    }
+
+    #[bench]
+    fn main_crackle_pop_arraybuf_with_newline_methods(b: &mut Bencher) {
+        b.iter(|| super::crackle_pop_arraybuf_with_newline_methods());
+    }
+
+    #[bench]
+    fn main_crackle_pop_arraybuf_minimal_vars(b: &mut Bencher) {
+        b.iter(|| super::crackle_pop_arraybuf_minimal_vars());
     }
 
     #[bench]
@@ -577,5 +621,14 @@ mod tests {
             }
             vec.clear();
         });
+    }
+
+    /// This test shows that writing directly to stdout is not captured in tests
+    /// unlike println! is...
+    #[test]
+    #[ignore]
+    fn write_to_stdout() {
+        let mut out = std::io::stdout();
+        write!(out, "this is a test!!").unwrap();
     }
 }
