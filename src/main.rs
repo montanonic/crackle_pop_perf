@@ -9,9 +9,12 @@ use std::{mem, ops::Deref};
 use io::Result;
 
 pub fn main() {
-    crackle_pop_faster_utf8();
+    crackle_pop_arraybuf_minimal_vars();
 }
 
+/// 512 bytes, just enough for this problem. Can also test benchmarks with
+/// larger values to see if it affects actual CPU performance in any way.
+const ARRAY_BUFFER_SIZE: usize = 0x200;
 const MAX_CAP: usize = "CracklePop".len();
 
 fn crackle_pop() {
@@ -72,6 +75,7 @@ fn crackle_pop_faster_utf8() {
     const POP: &str = "Pop";
     const CRACKLE_POP: &str = "CracklePop";
 
+    let mut out = io::stdout();
     for n in 1u8..=100 {
         let div_by_3 = n % 3 == 0;
         let div_by_5 = n % 5 == 0;
@@ -87,7 +91,6 @@ fn crackle_pop_faster_utf8() {
         };
 
         if str.is_empty() {
-            let mut out = io::stdout();
             write_u8_as_utf8(n, &mut out);
             out.write(b"\n").unwrap();
         } else {
@@ -96,13 +99,14 @@ fn crackle_pop_faster_utf8() {
     }
 }
 
-/// Furthers the hardcoded implementation with an array-buffer to collect the
-/// data and a single write to stdout.
+/// Furthers the faster utf8 implementation with an array-buffer to collect the
+/// data and follow with a single write to stdout.
 fn crackle_pop_arrbuf() {
     const CRACKLE: &str = "Crackle";
     const POP: &str = "Pop";
     const CRACKLE_POP: &str = "CracklePop";
 
+    let mut buf: ArrayBuffer<_, ARRAY_BUFFER_SIZE> = ArrayBuffer::new();
     for n in 1u8..=100 {
         let div_by_3 = n % 3 == 0;
         let div_by_5 = n % 5 == 0;
@@ -118,11 +122,109 @@ fn crackle_pop_arrbuf() {
         };
 
         if str.is_empty() {
-            println!("{}", n);
+            write_u8_as_utf8(n, &mut buf);
+            buf.push(b'\n');
         } else {
-            println!("{}", str);
+            buf.push_buf(str.as_bytes());
+            buf.push(b'\n');
         }
     }
+
+    buf.write_all_to_stdout().unwrap();
+}
+
+/// Furthers the arraybuf impl by using its own write u8 as utf8 implementation
+/// that doesn't go through the Writer trait.
+fn crackle_pop_arraybuf_with_own_write_u8() {
+    const CRACKLE: &str = "Crackle";
+    const POP: &str = "Pop";
+    const CRACKLE_POP: &str = "CracklePop";
+
+    let mut buf: ArrayBuffer<_, ARRAY_BUFFER_SIZE> = ArrayBuffer::new();
+    for n in 1u8..=100 {
+        let div_by_3 = n % 3 == 0;
+        let div_by_5 = n % 5 == 0;
+
+        let str = if div_by_3 && div_by_5 {
+            CRACKLE_POP
+        } else if div_by_3 {
+            CRACKLE
+        } else if div_by_5 {
+            POP
+        } else {
+            ""
+        };
+
+        if str.is_empty() {
+            buf.write_u8_as_utf8(n);
+            buf.push(b'\n');
+        } else {
+            buf.push_buf(str.as_bytes());
+            buf.push(b'\n');
+        }
+    }
+
+    buf.write_all_to_stdout().unwrap();
+}
+
+/// Furthers the arraybuf and own_write_u8 impls by using ArrayBuffer's built-in
+/// newline pushing methods.
+fn crackle_pop_arraybuf_with_newline_methods() {
+    const CRACKLE: &str = "Crackle";
+    const POP: &str = "Pop";
+    const CRACKLE_POP: &str = "CracklePop";
+
+    let mut buf: ArrayBuffer<_, ARRAY_BUFFER_SIZE> = ArrayBuffer::new();
+    for n in 1u8..=100 {
+        let div_by_3 = n % 3 == 0;
+        let div_by_5 = n % 5 == 0;
+
+        let str = if div_by_3 && div_by_5 {
+            CRACKLE_POP
+        } else if div_by_3 {
+            CRACKLE
+        } else if div_by_5 {
+            POP
+        } else {
+            ""
+        };
+
+        if str.is_empty() {
+            buf.write_u8_as_utf8_with_newline(n);
+        } else {
+            buf.push_buf_line(str.as_bytes());
+        }
+    }
+
+    buf.write_all_to_stdout().unwrap();
+}
+
+/// Takes all the arraybuf and utf8 speed advancements and further optimizes the
+/// amount of data transformations happening by working with bytes instead of
+/// &str the whole time, and writing directly to the buffer rather than storing
+/// an intermediate "str" var.
+fn crackle_pop_arraybuf_minimal_vars() {
+    const CRACKLE: &[u8] = b"Crackle";
+    const POP: &[u8] = b"Pop";
+    const CRACKLE_POP: &[u8] = b"CracklePop";
+
+    let mut buf: ArrayBuffer<_, ARRAY_BUFFER_SIZE> = ArrayBuffer::new();
+    for n in 1u8..=100 {
+        let div_by_3 = n % 3 == 0;
+        let div_by_5 = n % 5 == 0;
+
+        if div_by_3 && div_by_5 {
+            buf.push_buf_line(CRACKLE_POP);
+        } else if div_by_3 {
+            buf.push_buf_line(CRACKLE);
+        } else if div_by_5 {
+            buf.push_buf_line(POP);
+        } else {
+            buf.write_u8_as_utf8_with_newline(n)
+        };
+    }
+
+    buf.write_all_to_stdout().unwrap();
 }
 
 /// Idea: separate out the numbers that need to get converted to unicode, and
@@ -195,7 +297,7 @@ impl<T, const N: usize> ArrayBuffer<T, N> {
         self.pos += M;
     }
 
-    pub fn push(&mut self, val: T) {
+    fn push(&mut self, val: T) {
         self.buf[self.pos] = val;
         self.pos += 1;
     }
@@ -209,6 +311,57 @@ impl<const N: usize> ArrayBuffer<u8, N> {
         io::stdout().write_all(&self.buf[0..self.pos])?;
         self.pos = 0;
         Ok(())
+    }
+
+    /// Functions identically to pushing a value and then pushing a newline
+    /// character code, but with potentially higher performance.
+    pub fn push_line(&mut self, val: u8) {
+        self.buf[self.pos] = val;
+        self.buf[self.pos + 1] = b'\n';
+        self.pos += 2;
+    }
+
+    /// Functions identically to pushing a buffer and then pushing a newline
+    /// character code, but with potentially higher performance.
+    pub fn push_buf_line(&mut self, buf: &[u8]) {
+        let len = buf.len();
+        for i in 0..len {
+            self.buf[i + self.pos] = buf[i];
+        }
+        self.buf[len + self.pos] = b'\n';
+        self.pos += len + 1;
+    }
+
+    /// A specialized version of this function, working directly through array
+    /// buffer methods rather than the general Write trait. I'm curious about
+    /// potential performance differences.
+    fn write_u8_as_utf8(&mut self, x: u8) {
+        const UTF8_ZERO: u8 = b'0';
+        if x < 10 {
+            self.push(UTF8_ZERO + x);
+        } else if x < 100 {
+            let ones = x % 10;
+            let tens = x / 10;
+            self.push_fixed([UTF8_ZERO + tens, UTF8_ZERO + ones]);
+        } else {
+            let s_buf = format!("{}", x);
+            self.push_buf(s_buf.as_bytes());
+        }
+    }
+
+    /// A further specialized version that rolls in adding a newline as well.
+    fn write_u8_as_utf8_with_newline(&mut self, x: u8) {
+        const UTF8_ZERO: u8 = b'0';
+        if x < 10 {
+            self.push_line(UTF8_ZERO + x);
+        } else if x < 100 {
+            let ones = x % 10;
+            let tens = x / 10;
+            self.push_fixed([UTF8_ZERO + tens, UTF8_ZERO + ones, b'\n']);
+        } else {
+            let s_buf = format!("{}\n", x);
+            self.push_buf(s_buf.as_bytes());
+        }
     }
 }
 
@@ -358,6 +511,11 @@ mod tests {
     #[bench]
     fn crackle_pop_hardcoded(b: &mut Bencher) {
         b.iter(|| super::crackle_pop_hardcoded());
+    }
+
+    #[bench]
+    fn crackle_pop_faster_utf8(b: &mut Bencher) {
+        b.iter(|| super::crackle_pop_faster_utf8());
     }
 
     #[bench]
