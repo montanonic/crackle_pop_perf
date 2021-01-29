@@ -6,26 +6,10 @@ use std::io::{self, prelude::*};
 use std::{array::IntoIter, char, convert::TryInto, ops::Index};
 use std::{mem, ops::Deref};
 
-pub fn main() {
-    println!("{:?}", char::from_digit(11, 16).unwrap() as u8);
-    println!("{:?}", char::from_digit(11, 20));
-    println!("{:?}", char::from_digit(11, 10));
-    let b = &mut [0; 8];
-    '0'.encode_utf8(b);
-    println!("{:?}", b);
+use io::Result;
 
-    // io::stdout().write(&[).unwrap();
-    // println!(
-    //     "{:?}",
-    //     i32::to_ne_bytes(909090)
-    //         .iter()
-    //         .map(|x| format!("{:08b}", x))
-    //         .collect::<Vec<_>>()
-    // );
-    // println!("{:?}", "10".to_ascii_lowercase().as_bytes());
-    // println!("{:?}", 'س');
-    // println!("{:?}", mem::size_of_val(&'س'));
-    // println!("{:?}", mem::size_of_val(&format_args!("{}", 10)));
+pub fn main() {
+    crackle_pop_faster_utf8();
 }
 
 const MAX_CAP: usize = "CracklePop".len();
@@ -53,8 +37,6 @@ fn crackle_pop() {
 
 /// Uses u8's and hardcoded const values rather than string buffer manipulation.
 fn crackle_pop_hardcoded() {
-    use std::char;
-
     const CRACKLE: &str = "Crackle";
     const POP: &str = "Pop";
     const CRACKLE_POP: &str = "CracklePop";
@@ -63,12 +45,74 @@ fn crackle_pop_hardcoded() {
         let div_by_3 = n % 3 == 0;
         let div_by_5 = n % 5 == 0;
 
-        let str = if div_by_3 {
+        let str = if div_by_3 && div_by_5 {
+            CRACKLE_POP
+        } else if div_by_3 {
             CRACKLE
         } else if div_by_5 {
             POP
-        } else if div_by_3 && div_by_5 {
+        } else {
+            ""
+        };
+
+        if str.is_empty() {
+            println!("{}", n);
+        } else {
+            println!("{}", str);
+        }
+    }
+}
+
+/// Furthers the hardcoded implementation with a function that more optimally
+/// encodes u8 numbers into UTF8 characters representing them. Does a separate
+/// newline write however, which may degrade performance (consider making a
+/// writeln method on ArrayBuffer).
+fn crackle_pop_faster_utf8() {
+    const CRACKLE: &str = "Crackle";
+    const POP: &str = "Pop";
+    const CRACKLE_POP: &str = "CracklePop";
+
+    for n in 1u8..=100 {
+        let div_by_3 = n % 3 == 0;
+        let div_by_5 = n % 5 == 0;
+
+        let str = if div_by_3 && div_by_5 {
             CRACKLE_POP
+        } else if div_by_3 {
+            CRACKLE
+        } else if div_by_5 {
+            POP
+        } else {
+            ""
+        };
+
+        if str.is_empty() {
+            let mut out = io::stdout();
+            write_u8_as_utf8(n, &mut out);
+            out.write(b"\n").unwrap();
+        } else {
+            println!("{}", str);
+        }
+    }
+}
+
+/// Furthers the hardcoded implementation with an array-buffer to collect the
+/// data and a single write to stdout.
+fn crackle_pop_arrbuf() {
+    const CRACKLE: &str = "Crackle";
+    const POP: &str = "Pop";
+    const CRACKLE_POP: &str = "CracklePop";
+
+    for n in 1u8..=100 {
+        let div_by_3 = n % 3 == 0;
+        let div_by_5 = n % 5 == 0;
+
+        let str = if div_by_3 && div_by_5 {
+            CRACKLE_POP
+        } else if div_by_3 {
+            CRACKLE
+        } else if div_by_5 {
+            POP
         } else {
             ""
         };
@@ -88,9 +132,29 @@ fn crackle_pop_split_up() {
     unimplemented!()
 }
 
+/// Encodes a u8 number in utf8 format (for general IO printing), and writes it
+/// to a buffer.
+fn write_u8_as_utf8<W: Write>(x: u8, buf: &mut W) {
+    const UTF8_ZERO: u8 = b'0';
+    if x < 10 {
+        buf.write_all(&[UTF8_ZERO + x]).unwrap();
+    } else if x < 100 {
+        let ones = x % 10;
+        let tens = x / 10;
+        buf.write_all(&[UTF8_ZERO + tens, UTF8_ZERO + ones])
+            .unwrap();
+    } else {
+        // Not particularly optimized. Current estimate from benches is 20x
+        // slower. Albeit, this branch will be avoided during the crackle_pop
+        // routine.
+        let s_buf = format!("{}", x);
+        buf.write_all(s_buf.as_bytes()).unwrap();
+    }
+}
+
 /// This data structure will go directly on the stack. It is only intended to be
 /// written to and consumed. Optimal for smaller IO (otherwise we'd want
-/// dynamic).
+/// dynamic). Barebones and prone to panic-ing.
 ///
 /// No methods will check that writing to the buffer won't overflow. Instead,
 /// Rust will just panic.
@@ -137,6 +201,17 @@ impl<T, const N: usize> ArrayBuffer<T, N> {
     }
 }
 
+impl<const N: usize> ArrayBuffer<u8, N> {
+    /// Attempts to write the entire buffer to stdout. If it fails, the
+    /// operation has to be repeated, as no state is saved internally to track
+    /// what was last printed.
+    pub fn write_all_to_stdout(&mut self) -> io::Result<()> {
+        io::stdout().write_all(&self.buf[0..self.pos])?;
+        self.pos = 0;
+        Ok(())
+    }
+}
+
 /// The ArrayBuffer simply derefs to the underlying buffer. We intentionally do
 /// not provide DerefMut, as our buffer relies upon continuous writing to the
 /// end.
@@ -157,24 +232,6 @@ impl<const N: usize> Write for ArrayBuffer<u8, N> {
 
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
-    }
-}
-
-/// Encodes a u8 number in utf8 format (for general IO printing), and writes it
-/// to a buffer.
-fn write_u8_as_utf8<W: Write>(x: u8, buf: &mut W) {
-    if x < 10 {
-        buf.write_all(&[b'0' + x]).unwrap();
-    } else if x < 100 {
-        let ones = x % 10;
-        let tens = x / 10;
-        buf.write_all(&[b'0' + tens, b'0' + ones]).unwrap();
-    } else {
-        // Not particularly optimized. Current estimate from benches is 20x
-        // slower. Albeit, this branch will be avoided during the crackle_pop
-        // routine.
-        let s_buf = format!("{}", x);
-        buf.write_all(s_buf.as_bytes()).unwrap();
     }
 }
 
