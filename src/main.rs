@@ -2,11 +2,8 @@
 #![warn(missing_debug_implementations, rust_2018_idioms)]
 #![feature(test, array_value_iter)]
 
-use std::{array::IntoIter, char, ops::Index};
-use std::{
-    io::{self, prelude::*},
-    marker::PhantomData,
-};
+use std::io::{self, prelude::*};
+use std::{array::IntoIter, char, convert::TryInto, ops::Index};
 use std::{mem, ops::Deref};
 
 pub fn main() {
@@ -54,14 +51,14 @@ fn crackle_pop() {
     }
 }
 
-fn crackle_pop_efficient() {
+/// Uses u8's and hardcoded const values rather than string buffer manipulation.
+fn crackle_pop_hardcoded() {
     use std::char;
 
     const CRACKLE: &str = "Crackle";
     const POP: &str = "Pop";
     const CRACKLE_POP: &str = "CracklePop";
 
-    // let num_str_buf = [char::default(); 2];
     for n in 1u8..=100 {
         let div_by_3 = n % 3 == 0;
         let div_by_5 = n % 5 == 0;
@@ -74,11 +71,6 @@ fn crackle_pop_efficient() {
             CRACKLE_POP
         } else {
             ""
-            // let tens = n / 10;
-            // num_str_buf[0] = char::from_digit(tens, 10).unwrap();
-            // let ones = n % 10;
-            // num_str_buf[1] = char::from_digit(ones, 10).unwrap();
-            // num_str_buf.jo
         };
 
         if str.is_empty() {
@@ -116,6 +108,14 @@ impl<T: Default + Copy, const N: usize> ArrayBuffer<T, N> {
             buf: [T::default(); N],
         }
     }
+
+    fn push_buf(&mut self, buf: &[T]) {
+        let len = buf.len();
+        for i in 0..len {
+            self.buf[i + self.pos] = buf[i];
+        }
+        self.pos += len;
+    }
 }
 
 impl<T, const N: usize> ArrayBuffer<T, N> {
@@ -130,14 +130,6 @@ impl<T, const N: usize> ArrayBuffer<T, N> {
             .for_each(|(i, x)| self.buf[pos + i] = x);
         self.pos += M;
     }
-
-    // fn push_buf(&mut self, buf: &[T]) {
-    //     let pos = self.pos;
-    //     IntoIter::new(buf)
-    //         .enumerate()
-    //         .for_each(|(i, x)| self.buf[pos + i] = x);
-    //     self.pos += M;
-    // }
 
     pub fn push(&mut self, val: T) {
         self.buf[self.pos] = val;
@@ -155,24 +147,36 @@ impl<T, const N: usize> Deref for ArrayBuffer<T, N> {
     }
 }
 
-// impl<T, const N: usize> Write for ArrayBuffer<T, N> {
-//     fn write(&mut self, buf: &[u8]) -> Result<usize> {
-//         if self.pos + buf.len() >= N {
-//             Ok(0) // C
-//         }
-//     }
-// }
+/// We simply don't handle possibility for overflow and panic instead. A full
+/// write will always be attempted, and only a panic will prevent it.
+impl<const N: usize> Write for ArrayBuffer<u8, N> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.push_buf(buf);
+        Ok(buf.len())
+    }
 
-/// Encodes a u8 number in utf8 format (for general IO printing), and writes it to a buffer.
-// fn write_u8_as_utf8(x: u8, buf: &mut [u8]) {
-//     if x < 10 {
-//         buf.write(&[b'0' + x]);
-//     } else {
-//         let ones = x % 10;
-//         let tens = x / 10;
-//         buf.write(&[b'0' + tens, b'0' + ones])
-//     }
-// }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Encodes a u8 number in utf8 format (for general IO printing), and writes it
+/// to a buffer.
+fn write_u8_as_utf8<W: Write>(x: u8, buf: &mut W) {
+    if x < 10 {
+        buf.write_all(&[b'0' + x]).unwrap();
+    } else if x < 100 {
+        let ones = x % 10;
+        let tens = x / 10;
+        buf.write_all(&[b'0' + tens, b'0' + ones]).unwrap();
+    } else {
+        // Not particularly optimized. Current estimate from benches is 20x
+        // slower. Albeit, this branch will be avoided during the crackle_pop
+        // routine.
+        let s_buf = format!("{}", x);
+        buf.write_all(s_buf.as_bytes()).unwrap();
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -194,12 +198,58 @@ mod tests {
         assert_eq!(&ab[0..8], &[0, 1, 2, 3, 4, 5, 99, 0]);
     }
 
+    #[test]
+    fn write_u8_as_utf8_works() {
+        let mut buf = Vec::new();
+
+        super::write_u8_as_utf8(6, &mut buf);
+        assert_eq!(&buf, "6".as_bytes());
+
+        buf.clear();
+
+        super::write_u8_as_utf8(81, &mut buf);
+        assert_eq!(&buf, "81".as_bytes());
+
+        buf.clear();
+
+        super::write_u8_as_utf8(240, &mut buf);
+        assert_eq!(&buf, "240".as_bytes());
+    }
+
+    #[bench]
+    fn concat_vs_hardcoded_cow(b: &mut Bencher) {
+        const CRACKLE: &str = "Crackle";
+        const POP: &str = "Pop";
+        const CRACKLE_POP: &str = "CracklePop";
+
+        let mut vec = Vec::with_capacity(1000);
+
+        b.iter(|| {
+            for i in 0..100 {
+                let str: Cow<'_, str> = if i % 3 == 0 {
+                    CRACKLE.into()
+                } else if (i + 1) % 3 == 0 {
+                    POP.into()
+                } else if (i + 2) % 3 == 0 {
+                    CRACKLE_POP.into()
+                } else {
+                    unreachable!()
+                };
+                vec.push(str);
+            }
+            vec.clear();
+        });
+    }
+
+    // Turns out this one is at least 4 times slowe than using Cow by itself,
+    // and at least a further twice as slow as using the fully hardcoded, no Cow
+    // version (8 times slower net).
     #[bench]
     fn concat_vs_hardcoded_concat(b: &mut Bencher) {
         const CRACKLE: &str = "Crackle";
         const POP: &str = "Pop";
 
-        // let mut vec = Vec::with_capacity(1000);
+        let mut vec = Vec::with_capacity(1000);
 
         b.iter(|| {
             for i in 0..100 {
@@ -212,9 +262,9 @@ mod tests {
                 } else {
                     unreachable!()
                 };
-                // vec.push(str);
+                vec.push(str);
             }
-            // vec.clear();
+            vec.clear();
         });
     }
 
@@ -224,7 +274,7 @@ mod tests {
         const POP: &str = "Pop";
         const CRACKLE_POP: &str = "CracklePop";
 
-        // let mut vec = Vec::with_capacity(1000);
+        let mut vec = Vec::with_capacity(1000);
 
         b.iter(|| {
             for i in 0..100 {
@@ -237,9 +287,9 @@ mod tests {
                 } else {
                     unreachable!()
                 };
-                // vec.push(str);
+                vec.push(str);
             }
-            // vec.clear();
+            vec.clear();
         });
     }
 
@@ -249,8 +299,8 @@ mod tests {
     }
 
     #[bench]
-    fn crackle_pop_efficient(b: &mut Bencher) {
-        b.iter(|| super::crackle_pop_efficient());
+    fn crackle_pop_hardcoded(b: &mut Bencher) {
+        b.iter(|| super::crackle_pop_hardcoded());
     }
 
     #[bench]
@@ -289,4 +339,28 @@ mod tests {
     //         }
     //     });
     // }
+
+    #[bench]
+    fn write_u8_lt_100(b: &mut Bencher) {
+        let vec = &mut Vec::with_capacity(1000);
+        b.iter(|| {
+            for i in 0..100 {
+                super::write_u8_as_utf8(i, vec);
+            }
+            vec.clear();
+        });
+    }
+
+    // According to benchmarks this performs literally about 20 times worse than
+    // when handling values beneath 100.
+    #[bench]
+    fn write_u8_gt_100(b: &mut Bencher) {
+        let vec = &mut Vec::with_capacity(1000);
+        b.iter(|| {
+            for i in 100..200 {
+                super::write_u8_as_utf8(i, vec);
+            }
+            vec.clear();
+        });
+    }
 }
