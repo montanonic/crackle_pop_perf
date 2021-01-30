@@ -15,12 +15,30 @@ use std::io::{self, prelude::*};
 use std::ops::Deref;
 use std::str;
 
-pub fn main() {
-    crackle_pop_faster_utf8();
-}
+pub fn main() {}
 
 /// 512 bytes, just enough for this problem. Can also test benchmarks with
 /// larger values to see if it affects actual CPU performance in any way.
+///
+/// UPDATE: It absolutely impacts perf, in a big way. Our arraybuf impls went
+/// from ~700ns to ~2600ns by increasing the array buffer size from 512 bytes to
+/// 8192 bytes. Be wary of the stack size! With 65536 bytes, 0x10_000, we went
+/// up to around 18,000ns per iter!
+///
+/// UPDATE UPDATE: Hmm, it looks like placing the struct behind a box doesn't
+/// actually change the performance hit here very much, going up to
+/// 19,800ns/iter for the minimal vars version (from 18k ns). I think I ought to
+/// look into the implementation of the buffer itself and understand how the
+/// size could be degrading performance.
+///
+/// Would it just be the initial allocation of the value that kills performance?
+/// I can quickly test that by upping the size of the vector in the other impl.
+///
+/// Answer: YES! The initial allocation is what kills perf; I also zeroed the
+/// vector to the same size of 0x10_000 in another impl and it has 23000ns/iter
+/// performance (yikes). From this observation we should be more keen on
+/// re-using buffers, and also potentially invest in creating a dynamically
+/// sized one (but of course, stack rather than heap allocated).
 const ARRAY_BUFFER_SIZE: usize = 0x200;
 const MAX_CAP: usize = "CracklePop".len();
 
@@ -225,7 +243,7 @@ pub fn crackle_pop_arraybuf_minimal_vars() {
     const POP: &[u8] = b"Pop";
     const CRACKLE_POP: &[u8] = b"CracklePop";
 
-    let mut buf: ArrayBuffer<_, ARRAY_BUFFER_SIZE> = ArrayBuffer::new();
+    let mut buf: Box<ArrayBuffer<u8, ARRAY_BUFFER_SIZE>> = Box::new(ArrayBuffer::new());
     for n in 1u8..=100 {
         let div_by_3 = n % 3 == 0;
         let div_by_5 = n % 5 == 0;
@@ -277,6 +295,10 @@ fn write_u8_as_utf8<W: Write>(x: u8, buf: &mut W) {
 ///
 /// No methods will check that writing to the buffer won't overflow. Instead,
 /// Rust will just panic.
+///
+/// This structure allocates up front in FULL. Be mindful to re-use it where
+/// possible rather than creating any large buffers internal to funcs/methods.
+/// Small buffers could be fine. TODO: implement a more dynamic array buffer!
 #[derive(Debug)]
 struct ArrayBuffer<T, const N: usize> {
     /// The current position that we may write to.
