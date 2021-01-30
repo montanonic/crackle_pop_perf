@@ -7,6 +7,18 @@
 //! test tests::main_crackle_pop_arrbuf                        ... bench:         669 ns/iter (+/- 136)
 //! test tests::main_crackle_pop_faster_utf8                   ... bench:       4,177 ns/iter (+/- 290)
 //! test tests::main_crackle_pop_hardcoded                     ... bench:       4,438 ns/iter (+/- 272)
+//!
+//! So when I instead of using println! at the end, just return the data structure itself, I get
+//! test tests::main_crackle_pop_arraybuf_minimal_vars         ... bench:         409 ns/iter (+/- 41)
+//! test tests::main_crackle_pop_vec_minimal_vars              ... bench:         488 ns/iter (+/- 36)
+//!
+//! Those two are the fastest implementations I have. Notice how the Vec version is only just barely
+//! slower. Going back to the version with println!, we get:
+//! test tests::main_crackle_pop_arraybuf_minimal_vars         ... bench:         668 ns/iter (+/- 127)
+//! test tests::main_crackle_pop_vec_minimal_vars              ... bench:         718 ns/iter (+/- 132)
+//!
+//! Again with the vec a bit slower, but barely. Our println! overhead is quite significant, accounting
+//! for roughly 1/4 - 1/3 of the total time.
 #![warn(missing_debug_implementations, rust_2018_idioms)]
 #![feature(test, array_value_iter)]
 
@@ -15,7 +27,14 @@ use std::io::{self, prelude::*};
 use std::ops::Deref;
 use std::str;
 
-pub fn main() {}
+pub fn main() {
+    let mut buf: ArrayBuffer<u8, ARRAY_BUFFER_SIZE> = ArrayBuffer::new();
+    (0..3).into_iter().for_each(|_| {
+        crackle_pop_fastest_arraybuf(&mut buf);
+        buf.write_all_to_stdout().unwrap();
+        buf.pos = 0;
+    });
+}
 
 /// 512 bytes, just enough for this problem. Can also test benchmarks with
 /// larger values to see if it affects actual CPU performance in any way.
@@ -39,7 +58,7 @@ pub fn main() {}
 /// performance (yikes). From this observation we should be more keen on
 /// re-using buffers, and also potentially invest in creating a dynamically
 /// sized one (but of course, stack rather than heap allocated).
-const ARRAY_BUFFER_SIZE: usize = 0x200;
+const ARRAY_BUFFER_SIZE: usize = 0x800;
 const MAX_CAP: usize = "CracklePop".len();
 
 pub fn crackle_pop() {
@@ -98,7 +117,8 @@ pub fn crackle_pop_hardcoded() {
 ///
 /// This implementation also currently uses a vector, which means we do hit the
 /// heap here. Perhaps worth benchmark comparing to exactly the same form but
-/// with a stack-allocated buffer.
+/// with a stack-allocated buffer. I would also like to see a version of this
+/// which only uses one final println call at the end.
 pub fn crackle_pop_faster_utf8() {
     const CRACKLE: &str = "Crackle";
     const POP: &str = "Pop";
@@ -243,7 +263,7 @@ pub fn crackle_pop_arraybuf_minimal_vars() {
     const POP: &[u8] = b"Pop";
     const CRACKLE_POP: &[u8] = b"CracklePop";
 
-    let mut buf: Box<ArrayBuffer<u8, ARRAY_BUFFER_SIZE>> = Box::new(ArrayBuffer::new());
+    let mut buf: ArrayBuffer<u8, ARRAY_BUFFER_SIZE> = ArrayBuffer::new();
     for n in 1u8..=100 {
         let div_by_3 = n % 3 == 0;
         let div_by_5 = n % 5 == 0;
@@ -260,6 +280,151 @@ pub fn crackle_pop_arraybuf_minimal_vars() {
     }
 
     buf.write_all_to_stdout().unwrap();
+}
+
+/// Does not use an arraybuffer, but uses a vec. Now we can compare stack vs
+/// heap allocated data performance. This is based off of the minimal vars impl.
+pub fn crackle_pop_vec_minimal_vars() {
+    const CRACKLE: &[u8] = b"Crackle";
+    const POP: &[u8] = b"Pop";
+    const CRACKLE_POP: &[u8] = b"CracklePop";
+
+    let mut buf = Vec::with_capacity(ARRAY_BUFFER_SIZE);
+    for n in 1u8..=100 {
+        let div_by_3 = n % 3 == 0;
+        let div_by_5 = n % 5 == 0;
+
+        if div_by_3 && div_by_5 {
+            buf.extend_from_slice(CRACKLE_POP);
+        } else if div_by_3 {
+            buf.extend_from_slice(CRACKLE);
+        } else if div_by_5 {
+            buf.extend_from_slice(POP);
+        } else {
+            write_u8_as_utf8(n, &mut buf);
+        };
+        buf.push(b'\n');
+    }
+
+    println!("{}", unsafe { str::from_utf8_unchecked(&buf) });
+}
+
+/// Doesn't use print, and doesn't use internal allocation.
+pub fn crackle_pop_ext_arraybuf_minimal_vars(buf: &mut ArrayBuffer<u8, ARRAY_BUFFER_SIZE>) {
+    const CRACKLE: &[u8] = b"Crackle";
+    const POP: &[u8] = b"Pop";
+    const CRACKLE_POP: &[u8] = b"CracklePop";
+
+    for n in 1u8..=100 {
+        let div_by_3 = n % 3 == 0;
+        let div_by_5 = n % 5 == 0;
+
+        if div_by_3 && div_by_5 {
+            buf.push_buf_line(CRACKLE_POP);
+        } else if div_by_3 {
+            buf.push_buf_line(CRACKLE);
+        } else if div_by_5 {
+            buf.push_buf_line(POP);
+        } else {
+            buf.write_u8_as_utf8_with_newline(n)
+        };
+    }
+}
+
+/// Like crackle_pop_ext_arraybuf_minimal_vars, but takes ownership of arraybuf
+/// rather than a reference.
+pub fn crackle_pop_ext_owned_arraybuf_minimal_vars(
+    mut buf: ArrayBuffer<u8, ARRAY_BUFFER_SIZE>,
+) -> ArrayBuffer<u8, ARRAY_BUFFER_SIZE> {
+    const CRACKLE: &[u8] = b"Crackle";
+    const POP: &[u8] = b"Pop";
+    const CRACKLE_POP: &[u8] = b"CracklePop";
+
+    for n in 1u8..=100 {
+        let div_by_3 = n % 3 == 0;
+        let div_by_5 = n % 5 == 0;
+
+        if div_by_3 && div_by_5 {
+            buf.push_buf_line(CRACKLE_POP);
+        } else if div_by_3 {
+            buf.push_buf_line(CRACKLE);
+        } else if div_by_5 {
+            buf.push_buf_line(POP);
+        } else {
+            buf.write_u8_as_utf8_with_newline(n)
+        };
+    }
+
+    buf
+}
+
+/// Doesn't use print, and doesn't use internal allocation.
+pub fn crackle_pop_ext_vec_minimal_vars(buf: &mut Vec<u8>) {
+    const CRACKLE: &[u8] = b"Crackle";
+    const POP: &[u8] = b"Pop";
+    const CRACKLE_POP: &[u8] = b"CracklePop";
+
+    for n in 1u8..=100 {
+        let div_by_3 = n % 3 == 0;
+        let div_by_5 = n % 5 == 0;
+
+        if div_by_3 && div_by_5 {
+            buf.extend_from_slice(CRACKLE_POP);
+        } else if div_by_3 {
+            buf.extend_from_slice(CRACKLE);
+        } else if div_by_5 {
+            buf.extend_from_slice(POP);
+        } else {
+            write_u8_as_utf8(n, buf);
+        };
+        buf.push(b'\n');
+    }
+}
+
+/// The fastest vec impl.
+pub fn crackle_pop_fastest_vec(buf: &mut Vec<u8>) {
+    const CRACKLE: &[u8] = b"Crackle";
+    const POP: &[u8] = b"Pop";
+    const CRACKLE_POP: &[u8] = b"CracklePop";
+
+    for n in 1u8..=100 {
+        let div_by_3 = n % 3 == 0;
+        let div_by_5 = n % 5 == 0;
+
+        if div_by_3 && div_by_5 {
+            buf.extend_from_slice(CRACKLE_POP);
+        } else if div_by_3 {
+            buf.extend_from_slice(CRACKLE);
+        } else if div_by_5 {
+            buf.extend_from_slice(POP);
+        } else {
+            write_1_or_2_digit_u8_as_utf8(n, buf);
+        };
+        buf.push(b'\n');
+    }
+}
+
+/// The fastest ArrayBuffer impl.
+pub fn crackle_pop_fastest_arraybuf(buf: &mut ArrayBuffer<u8, ARRAY_BUFFER_SIZE>) {
+    const CRACKLE: &[u8] = b"Crackle";
+    const POP: &[u8] = b"Pop";
+    const CRACKLE_POP: &[u8] = b"CracklePop";
+
+    for n in 1u8..=100 {
+        let div_by_3 = n % 3 == 0;
+        let div_by_5 = n % 5 == 0;
+
+        if div_by_3 && div_by_5 {
+            buf.push_buf_line(CRACKLE_POP);
+        } else if div_by_3 {
+            buf.push_buf_line(CRACKLE);
+        } else if div_by_5 {
+            buf.push_buf_line(POP);
+        } else {
+            write_1_or_2_digit_u8_as_utf8(n, buf);
+            buf.push(b'\n');
+        };
+    }
 }
 
 /// Idea: separate out the numbers that need to get converted to unicode, and
@@ -283,9 +448,23 @@ fn write_u8_as_utf8<W: Write>(x: u8, buf: &mut W) {
     } else {
         // Not particularly optimized. Current estimate from benches is 20x
         // slower. Albeit, this branch will be avoided during the crackle_pop
-        // routine.
+        // routine (but the perf hit of compiling with a branch will remain).
         let s_buf = format!("{}", x);
         buf.write_all(s_buf.as_bytes()).unwrap();
+    }
+}
+
+/// Encodes a 1 or 2 digit u8 number in utf8 format (for general IO printing),
+/// and writes it to a buffer.
+fn write_1_or_2_digit_u8_as_utf8<W: Write>(x: u8, buf: &mut W) {
+    const UTF8_ZERO: u8 = b'0';
+    if x < 10 {
+        buf.write_all(&[UTF8_ZERO + x]).unwrap();
+    } else {
+        let ones = x % 10;
+        let tens = x / 10;
+        buf.write_all(&[UTF8_ZERO + tens, UTF8_ZERO + ones])
+            .unwrap();
     }
 }
 
@@ -299,8 +478,8 @@ fn write_u8_as_utf8<W: Write>(x: u8, buf: &mut W) {
 /// This structure allocates up front in FULL. Be mindful to re-use it where
 /// possible rather than creating any large buffers internal to funcs/methods.
 /// Small buffers could be fine. TODO: implement a more dynamic array buffer!
-#[derive(Debug)]
-struct ArrayBuffer<T, const N: usize> {
+#[derive(Debug, Clone)]
+pub struct ArrayBuffer<T, const N: usize> {
     /// The current position that we may write to.
     pos: usize,
     buf: [T; N],
@@ -354,7 +533,7 @@ impl<const N: usize> ArrayBuffer<u8, N> {
     /// implementation.
     pub fn write_all_to_stdout(&mut self) -> io::Result<()> {
         // io::stdout().write_all(&self.buf[0..self.pos])?;
-        let str = unsafe { str::from_utf8_unchecked(&self.buf) };
+        let str = unsafe { str::from_utf8_unchecked(&self.buf[0..self.pos]) };
         print!("{}", str);
         self.pos = 0;
         Ok(())
@@ -440,6 +619,8 @@ mod tests {
     extern crate test;
     use std::{borrow::Cow, io::Write};
     use test::Bencher;
+
+    use crate::{ArrayBuffer, ARRAY_BUFFER_SIZE};
 
     #[test]
     fn array_buffer_works() {
@@ -582,6 +763,112 @@ mod tests {
     #[bench]
     fn main_crackle_pop_arraybuf_minimal_vars(b: &mut Bencher) {
         b.iter(|| super::crackle_pop_arraybuf_minimal_vars());
+    }
+
+    #[bench]
+    fn main_crackle_pop_vec_minimal_vars(b: &mut Bencher) {
+        b.iter(|| super::crackle_pop_vec_minimal_vars());
+    }
+
+    /*
+    With 0x800 ARRAY_BUFFER_SIZE and the CracklePop loop changed to be up to u8::MAX rather than 100,
+    we notice scarily similar performance characteristics between our data structures. The owned version
+    is more expensive as it requires an explicit clone to function. But the arraybuf and vec function
+    nearly identically outside of that. Fascinating! Remember, the key to these three tests is that they
+    do not allocate internally, but instead receive a buffer to place their results in.
+
+    test tests::main_crackle_pop_ext_arraybuf_minimal_vars       ... bench:       7,499 ns/iter (+/- 1,044)
+    test tests::main_crackle_pop_ext_owned_arraybuf_minimal_vars ... bench:       7,606 ns/iter (+/- 1,819)
+    test tests::main_crackle_pop_ext_vec_minimal_vars            ... bench:       7,437 ns/iter (+/- 1,584)
+
+    With our normal loop size of 100, here's the results:
+    test tests::main_crackle_pop_ext_arraybuf_minimal_vars       ... bench:         394 ns/iter (+/- 52)
+    test tests::main_crackle_pop_ext_owned_arraybuf_minimal_vars ... bench:         461 ns/iter (+/- 32)
+    test tests::main_crackle_pop_ext_vec_minimal_vars            ... bench:         420 ns/iter (+/- 25)
+
+    So clearly working with 3-digit values is much more expensive. Some further testing can happen in this
+    area. But in the end, the big performance gain wasn't arraybuf, it was deferring the write to println!
+    until the very end. When we drop println! entirely from our computation, we have nearly identical
+    performance characteristics!
+
+    In other words... vec is very fast!
+
+    It also means that write_u8_as_utf8 becomes a bottleneck once we get into 3-digit numbers. Normally,
+    here's a rough look at the overhead that write_u8_as_utf8 adds (second test is with it commented out):
+
+    test tests::main_crackle_pop_ext_vec_minimal_vars            ... bench:         420 ns/iter (+/- 25)
+    test tests::main_crackle_pop_ext_vec_minimal_vars            ... bench:         242 ns/iter (+/- 10)
+
+    And when we go up to u8::MAX, but without the write_u8 func:
+    test tests::main_crackle_pop_ext_vec_minimal_vars            ... bench:         547 ns/iter (+/- 41)
+
+    Compare this to
+    test tests::main_crackle_pop_ext_vec_minimal_vars            ... bench:       7,437 ns/iter (+/- 1,584)
+    and you see that the difference is wild! We're spending around 12x the time of the other parts of our
+    computation just on 3-digit decoding.
+
+    Now of course, for this particular problem, this isn't important in the slightest. Can we save any extra
+    time by killing off our 3-digit branch?
+
+    test tests::main_crackle_pop_ext_vec_minimal_vars            ... bench:         339 ns/iter (+/- 15)
+
+    It looks like the answer is yes! Removing that branch gives another sizable percentage speedup!
+    */
+
+    #[bench]
+    fn main_crackle_pop_ext_arraybuf_minimal_vars(b: &mut Bencher) {
+        let mut buf: ArrayBuffer<u8, ARRAY_BUFFER_SIZE> = ArrayBuffer::new();
+        b.iter(|| {
+            super::crackle_pop_ext_arraybuf_minimal_vars(&mut buf);
+            buf.pos = 0;
+        });
+    }
+
+    #[bench]
+    fn main_crackle_pop_ext_owned_arraybuf_minimal_vars(b: &mut Bencher) {
+        let mut buf: ArrayBuffer<u8, ARRAY_BUFFER_SIZE> = ArrayBuffer::new();
+        b.iter(|| {
+            buf = super::crackle_pop_ext_owned_arraybuf_minimal_vars(buf.clone());
+            buf.pos = 0;
+        });
+    }
+
+    #[bench]
+    fn main_crackle_pop_ext_vec_minimal_vars(b: &mut Bencher) {
+        let mut buf = Vec::with_capacity(ARRAY_BUFFER_SIZE);
+        b.iter(|| {
+            super::crackle_pop_ext_vec_minimal_vars(&mut buf);
+            buf.clear();
+        });
+    }
+
+    /*
+    test tests::main_crackle_pop_fastest_arraybuf                ... bench:         318 ns/iter (+/- 19)
+    test tests::main_crackle_pop_fastest_vec                     ... bench:         340 ns/iter (+/- 13)
+
+    test tests::main_crackle_pop_fastest_arraybuf                ... bench:         335 ns/iter (+/- 19)
+    test tests::main_crackle_pop_fastest_vec                     ... bench:         339 ns/iter (+/- 9)
+
+    In the end there seems to be a slight edge for arraybuf, but barely. And it could also just be the
+    benefit of rolling in the newline calls into the same call.
+    */
+
+    #[bench]
+    fn main_crackle_pop_fastest_vec(b: &mut Bencher) {
+        let mut buf = Vec::with_capacity(ARRAY_BUFFER_SIZE);
+        b.iter(|| {
+            super::crackle_pop_fastest_vec(&mut buf);
+            buf.clear();
+        });
+    }
+
+    #[bench]
+    fn main_crackle_pop_fastest_arraybuf(b: &mut Bencher) {
+        let mut buf: ArrayBuffer<u8, ARRAY_BUFFER_SIZE> = ArrayBuffer::new();
+        b.iter(|| {
+            super::crackle_pop_fastest_arraybuf(&mut buf);
+            buf.pos = 0;
+        });
     }
 
     #[bench]
