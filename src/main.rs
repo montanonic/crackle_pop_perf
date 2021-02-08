@@ -22,18 +22,15 @@
 #![warn(missing_debug_implementations, rust_2018_idioms)]
 #![feature(test, array_value_iter)]
 
+mod rc_sub;
+
 use std::array::IntoIter;
 use std::io::{self, prelude::*};
 use std::ops::Deref;
 use std::str;
 
 pub fn main() {
-    let mut buf: ArrayBuffer<u8, ARRAY_BUFFER_SIZE> = ArrayBuffer::new();
-    (0..3).into_iter().for_each(|_| {
-        crackle_pop_fastest_arraybuf(&mut buf);
-        buf.write_all_to_stdout().unwrap();
-        buf.pos = 0;
-    });
+    rc_sub::main()
 }
 
 /// 512 bytes, just enough for this problem. Can also test benchmarks with
@@ -59,10 +56,11 @@ pub fn main() {
 /// re-using buffers, and also potentially invest in creating a dynamically
 /// sized one (but of course, stack rather than heap allocated).
 const ARRAY_BUFFER_SIZE: usize = 0x800;
-const MAX_CAP: usize = "CracklePop".len();
+/// Conservatively give more than enough byte space, so that we only need 1 allocation.
+const CAPACITY: usize = "CracklePop".len() * 100;
 
 pub fn crackle_pop() {
-    let mut str = String::with_capacity(MAX_CAP);
+    let mut str = String::with_capacity(CAPACITY);
     for n in 1..=100 {
         let div_by_3 = n % 3 == 0;
         let div_by_5 = n % 5 == 0;
@@ -74,12 +72,11 @@ pub fn crackle_pop() {
             str.push_str("Pop");
         }
         if !(div_by_3 || div_by_5) {
-            str = n.to_string();
+            str.push_str(&n.to_string());
         }
-
-        println!("{}", str);
-        str.clear();
+        str.push('\n');
     }
+    print!("{}", str.trim());
 }
 
 /// Uses u8's and hardcoded const values rather than string buffer manipulation.
@@ -126,7 +123,7 @@ pub fn crackle_pop_faster_utf8() {
 
     // I'd prefer to use stdout directly here, but then it won't play well with
     // tests (as it won't suppress output, unlike println!).
-    let mut vec = Vec::with_capacity(MAX_CAP + b"\n".len());
+    let mut vec = Vec::with_capacity(CAPACITY);
     for n in 1u8..=100 {
         let div_by_3 = n % 3 == 0;
         let div_by_5 = n % 5 == 0;
