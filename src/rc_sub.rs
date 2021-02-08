@@ -1,7 +1,8 @@
 //! Short self-contained module for showing off two primary solutions. The first
-//! is quite simple but also with some good performance characteristics, and the
-//! second is more verbose and uses a manual implementation of UTF8 encoding for
-//! numbers, but is significantly faster.
+//! is quite simple but still has good performance characteristics by avoiding
+//! reallocation and avoiding making multiple IO calls. The second works with
+//! raw bytes, has hardcoded values, and uses a manual implementation of UTF8
+//! encoding for numbers, but is significantly faster.
 
 pub fn main() {
     crackle_pop();
